@@ -9,7 +9,7 @@ on:
 jobs:
   build:
     name: Build unsigned beta IPA
-    runs-on: macos-26
+    runs-on: macos-latest
     timeout-minutes: 120
     env:
       LANG: en_US.UTF-8
