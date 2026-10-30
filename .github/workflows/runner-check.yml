@@ -2,6 +2,9 @@ name: Runner check
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - sideload-build
 
 jobs:
   linux:
