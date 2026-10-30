@@ -1,0 +1,88 @@
+name: Build unsigned IPA (for sideloading)
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - sideload-build
+
+jobs:
+  build:
+    name: Build unsigned beta IPA
+    runs-on: macos-26
+    timeout-minutes: 120
+    env:
+      LANG: en_US.UTF-8
+      LC_ALL: en_US.UTF-8
+      LANGUAGE: en_US.UTF-8
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          submodules: recursive
+
+      - name: Select newest installed Xcode
+        run: |
+          set -euo pipefail
+          ls -d /Applications/Xcode*.app || true
+          XCODE_APP=$(ls -d /Applications/Xcode_*.app | grep -v -i beta | sort -V | tail -n 1)
+          echo "Using $XCODE_APP"
+          echo "DEVELOPER_DIR=$XCODE_APP/Contents/Developer" >> "$GITHUB_ENV"
+          DEVELOPER_DIR="$XCODE_APP/Contents/Developer" xcodebuild -version
+          DEVELOPER_DIR="$XCODE_APP/Contents/Developer" xcodebuild -showsdks
+
+      - name: Set up Flutter
+        uses: axi92/flutter-action@72633a794ba0b23276fa4fc465a6cacb758a90c5
+        with:
+          channel: stable
+
+      - name: Configure iOS store build tree
+        run: dart tool/configure_build.dart --profile=ios-store
+
+      - name: Set up Rust and native asset build hooks
+        run: |
+          if ! command -v cargo >/dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+              | sh -s -- -y --profile minimal --default-toolchain stable
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+            . "$HOME/.cargo/env"
+          fi
+          rustup target add aarch64-apple-ios
+          flutter config --enable-native-assets
+
+      - name: Get dependencies
+        run: flutter pub get
+
+      - name: Run build_runner
+        run: dart run build_runner build
+
+      - name: Build iOS app without code signing
+        run: |
+          flutter build ios --release \
+            --flavor beta \
+            --no-codesign \
+            --dart-define-from-file=tool/dart_defines/beta.json \
+            --dart-define=PUSH_PROVIDER=apns \
+            --dart-define=BUILD_TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+      - name: Package .app into .ipa
+        run: |
+          set -euo pipefail
+          APP=$(find build/ios/iphoneos -maxdepth 1 -name '*.app' | head -n 1)
+          if [ -z "$APP" ]; then
+            echo "::error::No .app found in build/ios/iphoneos"
+            ls -la build/ios/iphoneos || true
+            exit 1
+          fi
+          echo "Packaging $APP"
+          mkdir -p ipa/Payload
+          cp -R "$APP" ipa/Payload/
+          (cd ipa && zip -qry ../Fluxer-unsigned.ipa Payload)
+          ls -lh Fluxer-unsigned.ipa
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: Fluxer-unsigned-ipa
+          path: Fluxer-unsigned.ipa
+          retention-days: 30
