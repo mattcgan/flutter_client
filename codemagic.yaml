@@ -1,0 +1,63 @@
+workflows:
+  unsigned-ipa:
+    name: Build unsigned IPA (for sideloading)
+    instance_type: mac_mini_m2
+    max_build_duration: 120
+    environment:
+      flutter: stable
+      xcode: latest
+      cocoapods: default
+    triggering:
+      events:
+        - push
+      branch_patterns:
+        - pattern: sideload-build
+          include: true
+          source: true
+    scripts:
+      - name: Sync submodules
+        script: git submodule update --init --recursive
+      - name: Show toolchain
+        script: |
+          xcodebuild -version
+          flutter --version
+      - name: Configure iOS store build tree
+        script: dart tool/configure_build.dart --profile=ios-store
+      - name: Set up Rust and native asset build hooks
+        script: |
+          if ! command -v cargo >/dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+              | sh -s -- -y --profile minimal --default-toolchain stable
+            echo "PATH=$HOME/.cargo/bin:$PATH" >> "$CM_ENV"
+            . "$HOME/.cargo/env"
+          fi
+          rustup target add aarch64-apple-ios
+          flutter config --enable-native-assets
+      - name: Get dependencies
+        script: flutter pub get
+      - name: Run build_runner
+        script: dart run build_runner build
+      - name: Build iOS app without code signing
+        script: |
+          flutter build ios --release \
+            --flavor beta \
+            --no-codesign \
+            --dart-define-from-file=tool/dart_defines/beta.json \
+            --dart-define=PUSH_PROVIDER=apns \
+            --dart-define=BUILD_TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+      - name: Package .app into .ipa
+        script: |
+          set -euo pipefail
+          APP=$(find build/ios/iphoneos -maxdepth 1 -name '*.app' | head -n 1)
+          if [ -z "$APP" ]; then
+            echo "No .app found in build/ios/iphoneos"
+            ls -la build/ios/iphoneos || true
+            exit 1
+          fi
+          echo "Packaging $APP"
+          mkdir -p ipa/Payload
+          cp -R "$APP" ipa/Payload/
+          (cd ipa && zip -qry ../Fluxer-unsigned.ipa Payload)
+          ls -lh Fluxer-unsigned.ipa
+    artifacts:
+      - Fluxer-unsigned.ipa
